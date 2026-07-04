@@ -1278,8 +1278,11 @@ async function refreshSealedPrices(){
 // ═══════════ v44: ADD-CARD BY SEARCH (pick real printings) ═══════════
 let _pkSeeds=[];
 function openCardPicker(target){
-  const game = target==='deck' ? ((state.decks[state.view.deckIndex]||{}).game||'mtg') : 'riftbound';
-  state.picker={ open:true, target, game, q:'', results:[], loading:false, error:'' };
+  let game='mtg', editIdx=null;
+  if(target==='deck'||target==='editDeck'){ game=(state.decks[state.view.deckIndex]||{}).game||'mtg'; if(target==='editDeck') editIdx=state.editingCard; }
+  else if(target==='editArchive'){ editIdx=state.editingArchive; game=((state.archive[editIdx]||{}).game)||'riftbound'; }
+  else game='riftbound';
+  state.picker={ open:true, target, game, editIdx, q:'', results:[], loading:false, error:'' };
   render(); setTimeout(()=>{ const i=document.getElementById('pk-q'); if(i)i.focus(); },40);
 }
 function closePicker(){ state.picker=null; render(); }
@@ -1325,24 +1328,28 @@ function pickerResultsHtml(){
 }
 async function pickerSelect(si, foil){
   const s=_pkSeeds[si]; const p=state.picker; if(!s||!p) return;
+  let card=null, game=p.game, isArchive=false, keepEdit=false;
   if(p.target==='deck'){
     const d=state.decks[state.view.deckIndex];
-    const card=makeCard(s.name,1,'Uncategorized',(d.game==='riftbound'?'Unit':'Creature'),true,s.price||0,s.set,s.cn);
-    card.foil=!!foil; card.imgUrl=s.image&&/tcgplayer|scryfall|scrydex/.test(s.image)?'':''; // let auto-image handle it
-    d.cards.push(card);
-    save();
-  } else {
-    const c={ name:s.name, game:p.game, set:s.set, cn:s.cn, qty:1, market:s.price||0, low:0, notes:'', foil:!!foil, imgUrl:'' };
-    state.archive.push(c);
-    save();
+    card=makeCard(s.name,1,'Uncategorized',(d.game==='riftbound'?'Unit':'Creature'),true,s.price||0,s.set,s.cn);
+    card.foil=!!foil; d.cards.push(card); game=d.game||'mtg'; save();
+  } else if(p.target==='editDeck'){
+    const d=state.decks[state.view.deckIndex]; card=d.cards[p.editIdx]; if(!card){ state.picker=null; render(); return; }
+    card.name=s.name; card.set=s.set; card.cn=s.cn; card.foil=!!foil; card.imgUrl='';
+    game=d.game||'mtg'; keepEdit=true; save();
+  } else if(p.target==='editArchive'){
+    card=state.archive[p.editIdx]; if(!card){ state.picker=null; render(); return; }
+    card.name=s.name; card.set=s.set; card.cn=s.cn; card.foil=!!foil; card.imgUrl='';
+    game=card.game||'riftbound'; isArchive=true; keepEdit=true; save();
+  } else { // archive (new)
+    card={ name:s.name, game:p.game, set:s.set, cn:s.cn, qty:1, market:s.price||0, low:0, notes:'', foil:!!foil, imgUrl:'' };
+    state.archive.push(card); game=p.game; isArchive=true; save();
   }
-  // reprice to the exact printing (respects foil) then close
-  const card = p.target==='deck' ? state.decks[state.view.deckIndex].cards.slice(-1)[0] : state.archive.slice(-1)[0];
-  showToast('Added — pricing…');
-  const res=await repriceCard(p.target==='deck'?card:{...card, foil:card.foil}, p.game);
-  if(res && res.price>0){ if(p.target==='deck'){card.price=res.price; if(typeof res.change7dPct==='number')card.change7dPct=res.change7dPct;} else card.market=res.price; recordPhJs(card,res.price); save(); }
-  showToast('✓ Added '+s.name+(res&&res.price>0?' · '+fmt$(res.price):''));
-  state.picker=null; render();
+  showToast('Pricing…');
+  const res=await repriceCard(card, game);
+  if(res && res.price>0){ if(isArchive) card.market=res.price; else { card.price=res.price; if(typeof res.change7dPct==='number')card.change7dPct=res.change7dPct; } recordPhJs(card,res.price); save(); }
+  showToast('✓ '+(keepEdit?'Set to ':'Added ')+s.name+(res&&res.price>0?' · '+fmt$(res.price):''));
+  state.picker=null; render(); // keepEdit leaves editingCard/editingArchive set, so the edit modal reappears with new values
 }
 
 // ─── Modals ───
@@ -1351,13 +1358,14 @@ function renderModals() {
   let h='';
   if (state.picker && state.picker.open) {
     const p=state.picker;
-    h += `<div class="modal-overlay"><div class="modal" style="max-width:580px" onclick="event.stopPropagation()">
-      <h2 style="margin:0 0 4px">Add Card</h2>
-      <p style="font-size:12px;color:var(--text-dim);margin:0 0 12px">Search by name, then tap the exact printing you own.</p>
+    const isEdit = p.target==='editDeck'||p.target==='editArchive';
+    h += `<div class="modal-overlay" style="z-index:1200"><div class="modal" style="max-width:580px" onclick="event.stopPropagation()">
+      <h2 style="margin:0 0 4px">${isEdit?'Find Printing':'Add Card'}</h2>
+      <p style="font-size:12px;color:var(--text-dim);margin:0 0 12px">${isEdit?'Search and tap a printing to set this card\u2019s set, number, foil &amp; price.':'Search by name, then tap the exact printing you own.'}</p>
       ${p.target==='archive'?`<div class="br-toggle" style="margin-bottom:10px"><button class="${p.game==='riftbound'?'on':''}" onclick="pickerSetGame('riftbound')">⚔️ Riftbound</button><button class="${p.game==='mtg'?'on':''}" onclick="pickerSetGame('mtg')">🃏 Magic</button></div>`:''}
       <div class="br-search" style="margin-bottom:12px"><span style="color:var(--text-dim)">🔎</span><input id="pk-q" placeholder="Card name…" value="${esc(p.q)}" onkeyup="if(event.key==='Enter')pickerSearch()"><button class="btn btn-sm" onclick="pickerSearch()">Search</button></div>
       <div class="pk-results">${pickerResultsHtml()}</div>
-      <div class="modal-actions"><button class="btn" onclick="closePicker()">Done</button>${p.target==='archive'?`<button class="btn" onclick="closePicker();openArchiveModal('new')">✏️ Manual entry</button>`:''}</div>
+      <div class="modal-actions"><button class="btn" onclick="closePicker()">${isEdit?'Cancel':'Done'}</button>${p.target==='archive'?`<button class="btn" onclick="closePicker();openArchiveModal('new')">✏️ Manual entry</button>`:''}</div>
     </div></div>`;
   }
   if (state.editingCard!==null) {
@@ -1375,6 +1383,7 @@ function renderModals() {
         <label style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;margin:0"><input type="checkbox" id="edit-gc" ${card.gameChanger?'checked':''} style="width:18px;height:18px;accent-color:var(--red)"><span style="color:var(--red);font-size:12px;font-weight:600">GC</span></label>
       </div></div></div>
       <label>Notes</label><input id="edit-notes" value="${esc(card.notes||'')}">
+      <button class="btn btn-sm" style="width:100%;margin:2px 0 8px" onclick="openCardPicker('editDeck')">🔎 Find printing — auto-fill set, #, foil &amp; price</button>
       <div class="grid2"><div><label>Set Code</label><input id="edit-set" value="${esc(card.set||'')}" placeholder="e.g. FIN" style="text-transform:uppercase" oninput="updateEditPreview()"></div>
       <div><label>Collector #</label><input id="edit-cn" value="${esc(card.cn||'')}" placeholder="e.g. 231" oninput="updateEditPreview()"></div></div>
       <label>Custom Image URL <span style="text-transform:none;letter-spacing:0;color:rgba(125,136,147,.7)">(optional — overrides auto image; use for alt-art / signed cards)</span></label>
@@ -1419,6 +1428,7 @@ function renderModals() {
       <label>Card Name</label><input id="ar-name" value="${esc(c.name)}" placeholder="e.g. Lee Sin (Signature)">
       <div class="grid2"><div><label>Game</label><select id="ar-game"><option value="mtg" ${ (c.game||'mtg')==='mtg'?'selected':''}>Magic: The Gathering</option><option value="riftbound" ${c.game==='riftbound'?'selected':''}>Riftbound</option></select></div>
       <div><label>Qty</label><input id="ar-qty" type="number" min="1" value="${c.qty||1}"></div></div>
+      ${state.editingArchive!=='new'?`<button class="btn btn-sm" style="width:100%;margin:2px 0 8px" onclick="openCardPicker('editArchive')">🔎 Find printing — auto-fill set, #, foil &amp; price</button>`:''}
       <div class="grid2"><div><label>Set Code</label><input id="ar-set" value="${esc(c.set||'')}" placeholder="e.g. OGN" style="text-transform:uppercase"></div>
       <div><label>Collector #</label><input id="ar-cn" value="${esc(c.cn||'')}" placeholder="e.g. 299"></div></div>
       <div class="grid2"><div><label>Market Price ($)</label><input id="ar-market" type="number" step="0.01" min="0" value="${c.market}"></div>
@@ -2902,7 +2912,7 @@ let rt; window.addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(ren
 
 // Service worker
 if('serviceWorker' in navigator){
-  const sw=`const C='kenns-vault-v46';self.addEventListener('install',e=>{e.waitUntil(caches.open(C).then(c=>c.addAll(['./','./index.html']).catch(()=>{})));self.skipWaiting();});self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==C).map(x=>caches.delete(x)))));self.clients.claim();});self.addEventListener('fetch',e=>{e.respondWith(fetch(e.request).then(r=>{const cl=r.clone();caches.open(C).then(c=>c.put(e.request,cl)).catch(()=>{});return r;}).catch(()=>caches.match(e.request)));});`;
+  const sw=`const C='kenns-vault-v47';self.addEventListener('install',e=>{e.waitUntil(caches.open(C).then(c=>c.addAll(['./','./index.html']).catch(()=>{})));self.skipWaiting();});self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==C).map(x=>caches.delete(x)))));self.clients.claim();});self.addEventListener('fetch',e=>{e.respondWith(fetch(e.request).then(r=>{const cl=r.clone();caches.open(C).then(c=>c.put(e.request,cl)).catch(()=>{});return r;}).catch(()=>caches.match(e.request)));});`;
   navigator.serviceWorker.register(URL.createObjectURL(new Blob([sw],{type:'application/javascript'}))).catch(()=>{});
 }
 </script>
